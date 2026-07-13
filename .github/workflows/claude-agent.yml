@@ -1,0 +1,50 @@
+# Reusable Claude agent workflow — gives every repository an on-demand
+# executor: mention @claude in any issue or PR comment and it investigates,
+# implements, and pushes changes on a branch.
+#
+# Caller stub (add to <repo>/.github/workflows/claude.yml):
+#
+#   on:
+#     issue_comment:
+#       types: [created]
+#     pull_request_review_comment:
+#       types: [created]
+#   jobs:
+#     agent:
+#       if: contains(github.event.comment.body, '@claude')
+#       uses: Uncle-Becky/.github/.github/workflows/claude-agent.yml@main
+#       secrets: inherit
+#
+# Requirements in each calling repo:
+#   - Claude GitHub App installed
+#   - ANTHROPIC_API_KEY Actions secret
+
+name: Claude Agent (reusable)
+
+on:
+  workflow_call:
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+
+jobs:
+  claude-agent:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # With no prompt, the action auto-detects the @claude mention and
+      # runs in interactive agent mode against the triggering comment.
+      - name: Run Claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
