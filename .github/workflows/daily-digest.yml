@@ -1,0 +1,111 @@
+# Daily GitHub inbox digest — the twin's morning sweep.
+#
+# Fetches all unread notifications across the account and files ONE issue
+# in this repo summarizing them, grouped by repository, with links. Handle
+# any item by commenting "@claude ..." on the digest issue (the agent
+# workflow picks it up), or just click through.
+#
+# Requirements (this repo only):
+#   - GH_NOTIFICATIONS_TOKEN secret: a classic PAT with the `notifications`
+#     scope (read-only is enough). GITHUB_TOKEN cannot read user
+#     notifications — this is the one place a PAT is unavoidable.
+#
+# Previous digest issues are auto-closed so exactly one is ever open.
+
+name: Daily GitHub Digest
+
+on:
+  schedule:
+    - cron: "0 13 * * *" # 13:00 UTC daily
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch unread notifications
+        env:
+          GH_TOKEN: ${{ secrets.GH_NOTIFICATIONS_TOKEN }}
+        run: |
+          gh api --paginate /notifications > notifications.json
+          jq length notifications.json
+
+      - name: Build digest body
+        run: |
+          python3 - <<'EOF'
+          import json
+          from collections import defaultdict
+          from datetime import date
+
+          with open("notifications.json") as f:
+              notes = json.load(f)
+
+          def html_url(subject):
+              url = subject.get("url") or ""
+              if not url:
+                  return subject.get("latest_comment_url") or ""
+              return (
+                  url.replace("api.github.com/repos/", "github.com/")
+                     .replace("/pulls/", "/pull/")
+              )
+
+          by_repo = defaultdict(list)
+          for n in notes:
+              by_repo[n["repository"]["full_name"]].append(n)
+
+          lines = [
+              f"Unread notifications as of {date.today().isoformat()}: "
+              f"**{len(notes)}**",
+              "",
+              "Comment `@claude <what you want done>` on this issue to "
+              "delegate any item.",
+              "",
+          ]
+          for repo in sorted(by_repo):
+              lines.append(f"### {repo}")
+              for n in sorted(by_repo[repo], key=lambda x: x["updated_at"],
+                              reverse=True):
+                  subject = n["subject"]
+                  link = html_url(subject)
+                  title = subject.get("title", "(no title)")
+                  kind = subject.get("type", "?")
+                  reason = n.get("reason", "?")
+                  lines.append(
+                      f"- [{title}]({link}) — {kind}, `{reason}`, "
+                      f"updated {n['updated_at'][:10]}"
+                  )
+              lines.append("")
+
+          if not notes:
+              lines = ["Inbox zero — no unread notifications. 🎉"]
+
+          with open("digest.md", "w") as f:
+              f.write("\n".join(lines))
+          EOF
+
+      - name: Close previous digest issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh issue list --label daily-digest --state open \
+            --json number -q '.[].number' | \
+            xargs -r -I{} gh issue close {} \
+              --comment "Superseded by today's digest."
+
+      - name: File today's digest issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh label create daily-digest \
+            --description "Automated inbox digest" \
+            --color 1D76DB || true
+          gh issue create \
+            --title "📥 GitHub Digest — $(date -u +%Y-%m-%d)" \
+            --label daily-digest \
+            --body-file digest.md

@@ -1,0 +1,88 @@
+# Reusable Claude PR review workflow — the single "brain" shared by every
+# repository in this account. Callers pass repo-specific review focus via
+# the `review_instructions` input; improving this file upgrades reviews
+# everywhere at once.
+#
+# Caller stub (put in <repo>/.github/workflows/claude.yml):
+#
+#   jobs:
+#     review:
+#       if: github.event_name == 'pull_request' && !github.event.pull_request.draft
+#       uses: Uncle-Becky/.github/.github/workflows/claude-review.yml@main
+#       with:
+#         review_instructions: |
+#           <repo-specific rules here>
+#       secrets: inherit
+#
+# Requirements in each calling repo:
+#   - Claude GitHub App installed (account-wide "All repositories" covers it)
+#   - ANTHROPIC_API_KEY Actions secret
+
+name: Claude Code Review (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      review_instructions:
+        description: Repo-specific review focus appended to the base prompt.
+        required: false
+        type: string
+        default: ""
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are the code reviewer for this repository. Review pull
+            request #${{ github.event.pull_request.number }} in
+            ${{ github.repository }}.
+
+            Before reading the diff, look for CLAUDE.md, ARCHITECTURE.md,
+            and ROADMAP.md at the repository root. If present, they define
+            the conventions and architectural rules this project holds
+            itself to — review the diff against THOSE rules first, then
+            general correctness.
+
+            Base review priorities:
+            1. Correctness: real bugs, broken edge cases, wrong API usage.
+               Be suspicious of tests that merely mirror the
+               implementation or mock third-party libraries with invented
+               call signatures.
+            2. Security: injected or unescaped external content, leaked
+               secrets or exception details, unsafe deserialization.
+            3. Maintainability: logic placed outside the layer that owns
+               it, duplicated implementations, dead configuration.
+            4. Tests: regressions for any bug being fixed; mocking at the
+               correct seam.
+
+            Do NOT comment on formatting or import order (formatters own
+            those). Skip praise; only report findings that would change
+            what the author does next.
+
+            Repo-specific review focus (from the calling repository):
+            ${{ inputs.review_instructions }}
+
+            Use inline comments for specific findings (file + line) and
+            finish with one short summary comment stating whether the PR
+            is safe to merge and listing findings ranked by severity. If
+            there are no findings, say so in a single sentence.
+          claude_args: |
+            --allowed-tools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*)"
